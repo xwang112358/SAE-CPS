@@ -3,9 +3,11 @@ import torch.nn as nn
 import os
 import numpy as np
 import datetime
-
+import pickle
 # D = d_model (input dimension)
 # F = hidden_dim (latent dimension)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class AutoEncoder(nn.Module):
     """
@@ -88,6 +90,7 @@ class AutoEncoder(nn.Module):
             valid_losses = []
             
             for input_X in train_loader:
+                input_X = input_X.to(device)
                 reconstructed_input_X, encoded_representation, train_loss = self.forward_pass(input_X)
                 optimizer.zero_grad()
                 train_loss.backward()
@@ -101,6 +104,7 @@ class AutoEncoder(nn.Module):
             self.eval()
             with torch.no_grad():
                 for input_X in valid_loader:
+                    input_X = input_X.to(device)
                     reconstructed_input_X, encoded_representation, valid_loss = self.forward_pass(input_X)
                     valid_losses.append(valid_loss.item())
 
@@ -111,10 +115,16 @@ class AutoEncoder(nn.Module):
             if mean_valid_loss < best_valid_loss:
                 best_valid_loss = mean_valid_loss
                 best_epoch = epoch
-                save_path = f"./checkpoints/{date_time}"
+                save_path = f"./checkpoints/ae/{date_time}"
                 os.makedirs(save_path, exist_ok=True)
                 torch.save(self.state_dict(), f"{save_path}/best_epoch.pth")
                 print(f"Saved model with lowest valid loss: {best_valid_loss} at epoch {best_epoch}")
+
+        # save loss history in pkl
+        with open(f"{save_path}/loss_history.pkl", "wb") as f:
+            pickle.dump(loss_history, f)
+        
+
 
         return loss_history
 
@@ -127,26 +137,49 @@ class AutoEncoder(nn.Module):
     def predict_anomaly(self,
                         model_path: str,
                         input_X: torch.Tensor,
-                        quantile: float = 0.95) -> tuple[torch.Tensor, torch.Tensor]:
+                        quantile: float = 0.95,
+                        normalize: bool = True,
+                        window: int = 1) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Predict anomalies using reconstruction error and quantile threshold.
+        Predict anomalies using reconstruction error and quantile threshold with window-based smoothing.
         Args:
             model_path: Path to the saved model file
             input_X: Input tensor to predict anomalies on
             quantile: Quantile threshold for anomaly detection (default: 0.95)
+            normalize: Whether to normalize reconstruction errors (default: True)
+            window: Size of the sliding window for smoothing (default: 1)
         Returns:
             Tuple containing:
             - Reconstruction error for each instance
             - Binary labels indicating anomalies (1) and normal samples (0)
         """
         self.load_model(model_path)
-        print(f"Loaded model from {model_path}")
+        # print(f"Loaded model from {model_path}")
         
         self.eval()
         with torch.no_grad():
             reconstructed_input_X, encoded_representation, _ = self.forward_pass(input_X)
-            # Use MSE as reconstruction error
+            # Calculate reconstruction errors
             reconstruction_error = torch.sum((reconstructed_input_X - input_X) ** 2, dim=1)
+            
+            if normalize:
+                # Normalize errors to have zero mean and unit variance
+                mean_error = torch.mean(reconstruction_error)
+                std_error = torch.std(reconstruction_error)
+                reconstruction_error = (reconstruction_error - mean_error) / std_error
+
+            # Apply window-based smoothing if window > 1
+            if window > 1:
+                # Convert to numpy for rolling window operation
+                errors_np = reconstruction_error.cpu().numpy()
+                
+                # Apply moving average
+                errors_smoothed = np.convolve(errors_np, np.ones(window)/window, mode='valid')
+                
+                # Pad the beginning to maintain the same length
+                padding = np.full(window-1, errors_smoothed[0])
+                errors_smoothed = np.concatenate([padding, errors_smoothed])
+                reconstruction_error = torch.tensor(errors_smoothed, device=reconstruction_error.device)
             
             # Calculate threshold using quantile
             threshold = torch.quantile(reconstruction_error, quantile)
@@ -156,7 +189,42 @@ class AutoEncoder(nn.Module):
             
             return reconstruction_error, anomaly_labels
 
-         
+    def calculate_feature_contribution(self, 
+                                       input_X: torch.Tensor,
+                                       model_path: str,
+                                       decoder_only: bool = False) -> torch.Tensor:
+        """
+        Calculate contribution score Cⱼ for each input feature j.
+        
+        Args:
+            input_X: Input tensor to analyze
+            model_path: Path to the saved model file
+            decoder_only: If True, use only decoder weights for contribution calculation
+        Returns:
+            Tensor containing contribution score for each feature
+        """
+        self.load_model(model_path)
+        self.eval()
+        with torch.no_grad():
+            # Get encoder and decoder weights
+            W_e = torch.abs(self.encoder.weight)  # Shape: (dict_size, input_dim)
+            W_d = torch.abs(self.decoder.weight)  # Shape: (input_dim, dict_size)
+            
+            z = self.encode(input_X)  # Shape: (batch_size, dict_size)
+            
+            contributions = torch.zeros(self.input_dim, device=input_X.device) # Ensure tensor is on the same device
+
+            if decoder_only:
+                for j in range(self.input_dim):
+                    for k in range(self.dict_size):
+                        contributions[j] += W_d[j,k] * z[0,k] # Assuming batch size of 1 for analysis
+            else:
+                for j in range(self.input_dim):
+                    for k in range(self.dict_size):
+                        contributions[j] += W_e[k,j] * z[0,k] * W_d[j,k] # Assuming batch size of 1 for analysis
+                    
+            return contributions
+
 
 if __name__ == "__main__":
     # Example usage

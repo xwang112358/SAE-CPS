@@ -3,7 +3,7 @@ import torch.nn as nn
 import os
 import numpy as np
 import datetime
-
+import pickle
 class LSTMAutoEncoder(nn.Module):
     """
     An LSTM-based autoencoder for temporal data.
@@ -164,9 +164,12 @@ class LSTMAutoEncoder(nn.Module):
                 best_epoch = epoch
                 save_path = f"./checkpoints/{date_time}"
                 os.makedirs(save_path, exist_ok=True)
-                torch.save(self.state_dict(), f"{save_path}/best_epoch.pth")
+                torch.save(self.state_dict(), f"{save_path}/lstm-ae/best_epoch.pth")
                 print(f"Saved model with lowest valid loss: {best_valid_loss} at epoch {best_epoch}")
-
+        # save loss history
+        with open(f"{save_path}/lstm-ae/loss_history.pkl", "wb") as f:
+            pickle.dump(loss_history, f)
+        print(f"Saved loss history to {save_path}/lstm-ae/loss_history.pkl")
         return loss_history
 
     def load_model(self,

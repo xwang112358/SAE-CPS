@@ -3,6 +3,8 @@ import torch.nn as nn
 import os
 import numpy as np
 import datetime
+import pickle
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class TopKSAE(nn.Module):
     """
@@ -100,6 +102,7 @@ class TopKSAE(nn.Module):
             train_losses = []
             valid_losses = []
             for input_X in train_loader:
+                input_X = input_X.to(device)
                 reconstructed_input_X, encoded_representation, train_loss = self.forward_pass(input_X)
                 optimizer.zero_grad()
                 train_loss.backward()
@@ -113,6 +116,7 @@ class TopKSAE(nn.Module):
             self.eval()
             with torch.no_grad():
                 for input_X in valid_loader:
+                    input_X = input_X.to(device)
                     reconstructed_input_X, encoded_representation, valid_recon_loss = self.forward_pass(input_X)
                     valid_losses.append(valid_recon_loss.item())
 
@@ -125,10 +129,14 @@ class TopKSAE(nn.Module):
                 best_valid_loss = mean_valid_loss
                 best_epoch = epoch
 
-                save_path = f"./checkpoints/{date_time}"
+                save_path = f"./checkpoints/topk_sae/{date_time}"
                 os.makedirs(save_path, exist_ok=True)
                 torch.save(self.state_dict(), f"{save_path}/best_epoch.pth")
                 print(f"Saved model with lowest valid loss: {best_valid_loss} at epoch {best_epoch}")
+
+        # save loss history in pkl
+        with open(f"{save_path}/loss_history.pkl", "wb") as f:
+            pickle.dump(loss_history, f)
 
         return loss_history
     
@@ -140,20 +148,24 @@ class TopKSAE(nn.Module):
     def predict_anomaly(self,
                         model_path: str,
                         input_X: torch.Tensor,
-                        quantile: float = 0.95) -> tuple[torch.Tensor, torch.Tensor]:
+                        quantile: float = 0.95,
+                        normalize: bool = True,
+                        window: int = 1) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Load a pretrained model and use it for anomaly detection.
         Args:
             model_path: Path to the saved model file
             input_X: Input tensor to predict anomalies on (shape: N*M where N is batch size, M is feature dimension)
             quantile: Quantile threshold for anomaly detection (default: 0.95)
+            normalize: Whether to normalize reconstruction errors (default: True)
+            window: Size of the sliding window for smoothing (default: 1, no smoothing)
         Returns:
             Tuple containing:
             - Reconstruction error for each instance (shape: N)
             - Binary labels indicating anomalies (1) and normal samples (0)
         """
         self.load_model(model_path)
-        print(f"Loaded model from {model_path}")
+        # print(f"Loaded model from {model_path}")
         
         # Move to evaluation mode
         self.eval()
@@ -162,6 +174,32 @@ class TopKSAE(nn.Module):
             reconstructed_X, encoded_features, loss = self.forward_pass(input_X)
             reconstruction_error = torch.sum((reconstructed_X - input_X) ** 2, dim=1)
             
+            # Normalize reconstruction errors if specified
+            if normalize:
+                mean_error = torch.mean(reconstruction_error)
+                std_error = torch.std(reconstruction_error)
+                # Add a small epsilon to prevent division by zero
+                reconstruction_error = (reconstruction_error - mean_error) / (std_error + 1e-6)
+
+            # Apply window-based smoothing if window > 1
+            if window > 1:
+                # Convert to numpy for rolling window operation
+                errors_np = reconstruction_error.cpu().numpy()
+                
+                # Apply moving average
+                errors_smoothed = np.convolve(errors_np, np.ones(window)/window, mode='valid')
+                
+                # Pad the beginning to maintain the same length
+                # Handle case where errors_smoothed might be empty if window is too large
+                if errors_smoothed.size > 0:
+                    padding = np.full(window-1, errors_smoothed[0])
+                    errors_smoothed = np.concatenate([padding, errors_smoothed])
+                else: # If window > len(errors_np), just use the original small array
+                    padding = np.full(window-1, errors_np[0] if errors_np.size > 0 else 0) # Use first element or 0
+                    errors_smoothed = np.concatenate([padding, errors_np]) # Pad original errors
+
+                reconstruction_error = torch.tensor(errors_smoothed, device=reconstruction_error.device, dtype=input_X.dtype)
+
             # Calculate threshold using quantile
             threshold = torch.quantile(reconstruction_error, quantile)
             

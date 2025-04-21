@@ -1,0 +1,2 @@
+timestamp,dict_size_multiplier,sparse_lambda,learning_rate,best_validation_loss
+2025-04-09_15-22-48, 4, 0.0010786764690002674, 0.00048323962055116525, 0.0027515793303874406
