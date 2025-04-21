@@ -14,6 +14,10 @@ pip3 install torch==2.5.1 torchvision==0.16.1 torchaudio==2.5.1
 pip install -r requirements.txt
 ```
 
+## Dataset Preparation
+If you want to rerun the data preprocessing, run `preprocess_dataset.ipynb`.
+
+
 ## Finetuning Models
 
 ```bash
