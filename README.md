@@ -1,4 +1,5 @@
-# SAE-CPS
+# SAE-CPS: Interpretable Anomaly Detection in Cyber-Physical Systems via Sparse Autoencoder
+
 Final Project for the Course CS8395 AI for Cyber-Physical Systems 
 
 ## Environment Setup
@@ -17,6 +18,8 @@ pip install -r requirements.txt
 
 ```bash
 python optimize_sae.py
+python optimize_ae.py
+python opyimize_topksae.py
 ```
 
 ## Visualize the results
